@@ -3,9 +3,7 @@ extern crate ws;
 extern crate serde_json;
 
 use std::env;
-//use std::cell::RefCell;
 use std::num::ParseIntError;
-use ws::{connect, CloseCode};
 
 static APP_NAME: &str  = "cli";
 static TOKEN: &str     = "be3363fa-0fe3-49de-9c97-3310d66cd3ac";
@@ -222,6 +220,140 @@ fn usage(args: Vec<String>)
     println!("  volume [ <0-100> | up | down ]");
 }
 
+struct Client
+{
+    out: ws::Sender,
+    namespace: String,
+    method: String,
+    arguments: String,
+    resp: fn(serde_json::Value),
+    cmd: String,
+ 
+    cur_volume: u64,
+    cur_shuffle: String,
+    cur_repeat: String,
+    cur_track_artist: String,
+    cur_track_album: String,
+    cur_track_title: String,
+    cur_track_progress: u64,
+    cur_track_total: u64,
+    cur_track_liked: bool,
+    cur_track_disliked: bool,
+}
+
+impl ws::Handler for Client
+{
+    fn on_open(&mut self, _: ws::Handshake) -> ws::Result<()>
+    {
+        let mut auth = String::new();
+        auth.push_str(&format!(r#"{{ "{}":"{}", "{}":"{}", "{}":["{}","{}"] }}"#,
+                               "namespace", "connect",
+                               "method", "connect",
+                               "arguments", APP_NAME, TOKEN));
+        //println!("{}", auth);
+
+        if let Err(_) = self.out.send(auth) {
+            println!("ERROR: failed to send auth message");
+        } else {
+            send_cmd(&self.out,
+                     &self.namespace,
+                     &self.method,
+                     &self.arguments).unwrap();
+        }
+
+        return Ok(());
+    }
+
+    fn on_message(&mut self, msg: ws::Message) -> ws::Result<()> {
+        let js: serde_json::Value =
+            serde_json::from_str(&msg.into_text().unwrap()).unwrap();
+        //println!("{:#?}", js);
+        if self.cmd == "status" && js.get("channel") != None {
+            match js.get("channel").unwrap().as_str().unwrap() {
+                "volume" => {
+                    self.cur_volume =
+                        js.get("payload").unwrap().as_u64().unwrap();
+                }
+                "track" => {
+                    self.cur_track_artist =
+                        js.get("payload").unwrap().get("artist").unwrap().as_str().unwrap().to_string();
+                    self.cur_track_album =
+                        js.get("payload").unwrap().get("album").unwrap().as_str().unwrap().to_string();
+                    self.cur_track_title =
+                        js.get("payload").unwrap().get("title").unwrap().as_str().unwrap().to_string();
+                }
+                "time" => {
+                    self.cur_track_progress =
+                        js.get("payload").unwrap().get("current").unwrap().as_u64().unwrap();
+                    self.cur_track_total =
+                        js.get("payload").unwrap().get("total").unwrap().as_u64().unwrap();
+                }
+                "rating" => {
+                    self.cur_track_liked =
+                        js.get("payload").unwrap().get("liked").unwrap().as_bool().unwrap();
+                    self.cur_track_disliked =
+                        js.get("payload").unwrap().get("disliked").unwrap().as_bool().unwrap();
+                }
+                "shuffle" => {
+                    self.cur_shuffle =
+                        js.get("payload").unwrap().as_str().unwrap().to_string();
+                }
+                "repeat" => {
+                    self.cur_repeat =
+                        js.get("payload").unwrap().as_str().unwrap().to_string();
+                }
+                "API_VERSION" |
+                "playState" |
+                "queue" |
+                "search-results" |
+                "lyrics" |
+                "settings:themeColor" |
+                "settings:theme" |
+                "settings:themeType" |
+                "playlists" |
+                "library" |
+                _ => {
+                    //println!("{:#?}", js);
+                }
+            }
+        }
+
+        if js.get("requestID") != None &&
+           js.get("requestID").unwrap() == REQUEST_ID {
+            self.out.close(ws::CloseCode::Normal).unwrap(); // close connection
+            //println!("Got the response!");
+            //println!("{:#?}", js);
+            (self.resp)(js);
+
+            if self.cmd == "status" {
+                println!("artist: {}", self.cur_track_artist);
+                println!("album: {}", self.cur_track_album);
+                println!("title: {}", self.cur_track_title);
+                println!("time: {}/{}",
+                         self.cur_track_progress, self.cur_track_total);
+                if self.cur_track_liked {
+                    println!("rating: up");
+                }
+                else if self.cur_track_disliked {
+                    println!("rating: down");
+                }
+                println!("volume: {}", self.cur_volume);
+                println!("shuffle: {}",
+                         if self.cur_shuffle == "NO_SHUFFLE" { "off" }
+                         else { "all" });
+                println!("repeat: {}",
+                         if self.cur_repeat == "LIST_REPEAT" { "all" }
+                         else if self.cur_repeat == "SINGLE_REPEAT" { "single" }
+                         else { "off" });
+            }
+        }
+
+        /* XXX need to handle timeouts... */
+
+        return Ok(());
+    }
+}
+
 fn main()
 {
     let args: Vec<String> = env::args().collect();
@@ -373,173 +505,22 @@ fn main()
         }
     }
 
-//let cur_playstate = RefCell::new(false);
-//let cur_volume = RefCell::new(0);
-//let cur_shuffle = RefCell::new("");
-//let cur_repeat = RefCell::new("");
-//let cur_track_artist = RefCell::new("");
-//let cur_track_album = RefCell::new("");
-//let cur_track_title = RefCell::new("");
-//let cur_track_progress = RefCell::new(0);
-//let cur_track_total = RefCell::new(0);
-//let cur_track_liked = RefCell::new(false);
-//let cur_track_disliked = RefCell::new(false);
-
     // connect to the GPMPD websocket and call the closure
-    if let Err(error) = connect(URL, |out| {
-
-        let mut auth = String::new();
-        auth.push_str(&format!(r#"{{ "{}":"{}", "{}":"{}", "{}":["{}","{}"] }}"#,
-                               "namespace", "connect",
-                               "method", "connect",
-                               "arguments", APP_NAME, TOKEN));
-        //println!("{}", auth);
-
-        if let Err(_) = out.send(auth) {
-            println!("ERROR: failed to send auth message")
-        } else {
-            send_cmd(&out, namespace, method, &arguments).unwrap();
-        }
-
-        // The handler needs to take ownership of out, so we use move
-        move |msg: ws::Message| {
-
-            let js: serde_json::Value =
-                serde_json::from_str(&msg.into_text().unwrap()).unwrap();
-            if cmd == "status" && js.get("channel") != None {
-                match js.get("channel").unwrap().as_str().unwrap() {
-                    "playState" => {
-                        /*
-                        *cur_playstate.borrow_mut() =
-                            js.get("payload").unwrap().as_bool().unwrap();
-                        */
-                        /*
-                        println!("state: {}",
-                                 js.get("payload").unwrap().as_bool().unwrap());
-                        */
-                    }
-                    "volume" => {
-                        /*
-                        *cur_volume.borrow_mut() =
-                            js.get("payload").unwrap().as_u64().unwrap();
-                        */
-                        println!("volume: {}",
-                                 js.get("payload").unwrap().as_u64().unwrap());
-                    }
-                    "track" => {
-                        /*
-                        *cur_track_artist.borrow_mut() =
-                            js.get("payload").unwrap().get("artist").unwrap().as_str().unwrap();
-                        *cur_track_album.borrow_mut() =
-                            js.get("payload").unwrap().get("album").unwrap().as_str().unwrap();
-                        *cur_track_title.borrow_mut() =
-                            js.get("payload").unwrap().get("title").unwrap().as_str().unwrap();
-                        */
-                        println!("artist: {}",
-                                 js.get("payload").unwrap().get("artist").unwrap().as_str().unwrap());
-                        println!("album: {}",
-                                 js.get("payload").unwrap().get("album").unwrap().as_str().unwrap());
-                        println!("title: {}",
-                                 js.get("payload").unwrap().get("title").unwrap().as_str().unwrap());
-                    }
-                    "time" => {
-                        /*
-                        *cur_track_progress.borrow_mut() =
-                            js.get("payload").unwrap().get("current").unwrap().as_u64().unwrap();
-                        *cur_track_total.borrow_mut() =
-                            js.get("payload").unwrap().get("total").unwrap().as_u64().unwrap();
-                        */
-                        println!("time: {}/{}",
-                                 js.get("payload").unwrap().get("current").unwrap().as_u64().unwrap(),
-                                 js.get("payload").unwrap().get("total").unwrap().as_u64().unwrap());
-                    }
-                    "rating" => {
-                        /*
-                        *cur_track_liked.borrow_mut() =
-                            js.get("payload").unwrap().get("liked").unwrap().as_bool().unwrap();
-                        *cur_track_disliked.borrow_mut() =
-                            js.get("payload").unwrap().get("disliked").unwrap().as_bool().unwrap();
-                        */
-                        let liked = js.get("payload").unwrap().get("liked").unwrap().as_bool().unwrap();
-                        let disliked = js.get("payload").unwrap().get("disliked").unwrap().as_bool().unwrap();
-                        if liked {
-                            println!("rating: up");
-                        }
-                        else if disliked {
-                            println!("rating: down");
-                        }
-                    }
-                    "shuffle" => {
-                        /*
-                        *cur_shuffle.borrow_mut() =
-                            js.get("payload").unwrap().as_str().unwrap();
-                        */
-                        let shuffle = js.get("payload").unwrap().as_str().unwrap();
-                        println!("shuffle: {}",
-                                 if shuffle == "NO_SHUFFLE" { "off" }
-                                 else { "all" });
-                    }
-                    "repeat" => {
-                        /*
-                        *cur_repeat.borrow_mut() =
-                            js.get("payload").unwrap().as_str().unwrap();
-                        */
-                        let repeat = js.get("payload").unwrap().as_str().unwrap();
-                        println!("repeat: {}",
-                                 if repeat == "LIST_REPEAT" { "all" }
-                                 else if repeat == "SINGLE_REPEAT" { "single" }
-                                 else { "off" });
-                    }
-                    "search-results" => {
-                        //println!("{:#?}", js);
-                    }
-                    "queue" => {
-                        //println!("{:#?}", js);
-                    }
-                    "playlists" => {
-                        //println!("{:#?}", js);
-                    }
-                    //"API_VERSION"
-                    //"lyrics"
-                    //"settings:themeColor"
-                    //"settings:theme"
-                    //"settings:themeType"
-                    //"library"
-                    _ => {
-                        //println!("{:#?}", js);
-                    }
-                }
-            }
-
-            if js.get("requestID") != None &&
-               js.get("requestID").unwrap() == REQUEST_ID {
-                out.close(CloseCode::Normal).unwrap(); // close connection
-                //println!("Got the response!");
-                //println!("{:#?}", js);
-                resp(js);
-            }
-
-            /* XXX need to handle timeouts... */
-
-            return Ok(());
-        }
-
-    }) {
-        // the connection failed
-        println!("ERROR: failed to connect to GPMPD ({:?})", error);
-    }
-/*
-println!("{}", cur_playstate.borrow());
-println!("{}", cur_volume.borrow());
-println!("{}", cur_shuffle.borrow());
-println!("{}", cur_repeat.borrow());
-println!("{}", cur_track_artist.borrow());
-println!("{}", cur_track_album.borrow());
-println!("{}", cur_track_title.borrow());
-println!("{}", cur_track_progress.borrow());
-println!("{}", cur_track_total.borrow());
-println!("{}", cur_track_liked.borrow());
-println!("{}", cur_track_disliked.borrow());
-*/
+    ws::connect(URL, |out| Client { out: out,
+                                    namespace: namespace.to_string(),
+                                    method: method.to_string(),
+                                    arguments: arguments.to_string(),
+                                    resp: resp,
+                                    cmd: cmd.to_string(),
+                                    cur_volume: 0,
+                                    cur_shuffle: "".to_string(),
+                                    cur_repeat: "".to_string(),
+                                    cur_track_artist: "".to_string(),
+                                    cur_track_album: "".to_string(),
+                                    cur_track_title: "".to_string(),
+                                    cur_track_progress: 0,
+                                    cur_track_total: 0,
+                                    cur_track_liked: false,
+                                    cur_track_disliked: false }).unwrap();
 }
 
