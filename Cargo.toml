@@ -1,0 +1,9 @@
+[package]
+name = "gpmdp_rc"
+version = "0.1.0"
+authors = ["Eric Davis <edavis@insanum.com>"]
+edition = "2018"
+
+[dependencies]
+ws = "*"
+serde_json = "1.0"
