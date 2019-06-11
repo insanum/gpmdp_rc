@@ -201,25 +201,6 @@ fn generic_handler(_js: serde_json::Value)
     //println!("{:#?}", _js);
 }
 
-fn usage(args: Vec<String>)
-{
-    println!("Usage: {} <command> [ args ]", args[0]);
-    println!("  help");
-    println!("  status");
-    println!("  play");
-    println!("  pause");
-    println!("  next");
-    println!("  prev");
-    println!("  thumbs < up | down >");
-    println!("  shuffle < on | off >");
-    println!("  repeat < all | single | off >");
-    println!("  queue");
-    println!("  clear");
-    println!("  playlists");
-    println!("  search \"<text>\"");
-    println!("  volume [ <0-100> | up | down ]");
-}
-
 struct Client
 {
     out: ws::Sender,
@@ -258,49 +239,59 @@ impl ws::Handler for Client
             send_cmd(&self.out,
                      &self.namespace,
                      &self.method,
-                     &self.arguments).unwrap();
+                     &self.arguments)?;
         }
 
         return Ok(());
     }
 
-    fn on_message(&mut self, msg: ws::Message) -> ws::Result<()> {
+    fn on_error(&mut self, err: ws::Error)
+    {
+        println!("ERROR: websocket failed ({})", err);
+    }
+
+    fn on_message(&mut self, msg: ws::Message) -> ws::Result<()>
+    {
         let js: serde_json::Value =
             serde_json::from_str(&msg.into_text().unwrap()).unwrap();
         //println!("{:#?}", js);
         if self.cmd == "status" && js.get("channel") != None {
+            let payload = js.get("payload").unwrap();
             match js.get("channel").unwrap().as_str().unwrap() {
                 "volume" => {
-                    self.cur_volume =
-                        js.get("payload").unwrap().as_u64().unwrap();
+                    self.cur_volume = payload.as_u64().unwrap();
                 }
                 "track" => {
-                    self.cur_track_artist =
-                        js.get("payload").unwrap().get("artist").unwrap().as_str().unwrap().to_string();
-                    self.cur_track_album =
-                        js.get("payload").unwrap().get("album").unwrap().as_str().unwrap().to_string();
-                    self.cur_track_title =
-                        js.get("payload").unwrap().get("title").unwrap().as_str().unwrap().to_string();
+                    if !payload.get("artist").unwrap().is_null() {
+                        self.cur_track_artist =
+                            payload.get("artist").unwrap().as_str().unwrap().to_string();
+                    }
+                    if !payload.get("album").unwrap().is_null() {
+                        self.cur_track_album =
+                            payload.get("album").unwrap().as_str().unwrap().to_string();
+                    }
+                    if !payload.get("title").unwrap().is_null() {
+                        self.cur_track_title =
+                            payload.get("title").unwrap().as_str().unwrap().to_string();
+                    }
                 }
                 "time" => {
                     self.cur_track_progress =
-                        js.get("payload").unwrap().get("current").unwrap().as_u64().unwrap();
+                        payload.get("current").unwrap().as_u64().unwrap();
                     self.cur_track_total =
-                        js.get("payload").unwrap().get("total").unwrap().as_u64().unwrap();
+                        payload.get("total").unwrap().as_u64().unwrap();
                 }
                 "rating" => {
                     self.cur_track_liked =
-                        js.get("payload").unwrap().get("liked").unwrap().as_bool().unwrap();
+                        payload.get("liked").unwrap().as_bool().unwrap();
                     self.cur_track_disliked =
-                        js.get("payload").unwrap().get("disliked").unwrap().as_bool().unwrap();
+                        payload.get("disliked").unwrap().as_bool().unwrap();
                 }
                 "shuffle" => {
-                    self.cur_shuffle =
-                        js.get("payload").unwrap().as_str().unwrap().to_string();
+                    self.cur_shuffle = payload.as_str().unwrap().to_string();
                 }
                 "repeat" => {
-                    self.cur_repeat =
-                        js.get("payload").unwrap().as_str().unwrap().to_string();
+                    self.cur_repeat = payload.as_str().unwrap().to_string();
                 }
                 "API_VERSION" |
                 "playState" |
@@ -331,12 +322,10 @@ impl ws::Handler for Client
                 println!("title: {}", self.cur_track_title);
                 println!("time: {}/{}",
                          self.cur_track_progress, self.cur_track_total);
-                if self.cur_track_liked {
-                    println!("rating: up");
-                }
-                else if self.cur_track_disliked {
-                    println!("rating: down");
-                }
+                println!("rating: {}",
+                         if self.cur_track_liked { "up" }
+                         else if self.cur_track_disliked { "down" }
+                         else { "none" });
                 println!("volume: {}", self.cur_volume);
                 println!("shuffle: {}",
                          if self.cur_shuffle == "NO_SHUFFLE" { "off" }
@@ -352,6 +341,25 @@ impl ws::Handler for Client
 
         return Ok(());
     }
+}
+
+fn usage(args: Vec<String>)
+{
+    println!("Usage: {} <command> [ args ]", args[0]);
+    println!("  help");
+    println!("  status");
+    println!("  play");
+    println!("  pause");
+    println!("  next");
+    println!("  prev");
+    println!("  thumbs < up | down >");
+    println!("  shuffle < on | off >");
+    println!("  repeat < all | single | off >");
+    println!("  queue");
+    println!("  clear");
+    println!("  playlists");
+    println!("  search \"<text>\"");
+    println!("  volume [ <0-100> | up | down ]");
 }
 
 fn main()
