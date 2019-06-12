@@ -104,29 +104,6 @@ static REQUEST_ID: u32 = 13;
  * }
  */
 
-fn send_cmd(out: &ws::Sender,
-            namespace: &str,
-            method: &str,
-            arguments: &str) -> Result<(), ws::Error>
-{
-    let mut req = String::new();
-    if arguments.is_empty() {
-        req.push_str(&format!(r#"{{ "{}":"{}", "{}":"{}", "{}":{} }}"#,
-                              "namespace", namespace,
-                              "method", method,
-                              "requestID", REQUEST_ID.to_string()));
-    } else {
-        req.push_str(&format!(r#"{{ "{}":"{}", "{}":"{}", "{}":{}, "{}":{} }}"#,
-                              "namespace", namespace,
-                              "method", method,
-                              "requestID", REQUEST_ID.to_string(),
-                              "arguments", arguments));
-    }
-
-    //println!("{}", req);
-    return out.send(req);
-}
-
 fn parse_volume(num_str: &str) -> Result<u32, ParseIntError>
 {
     return num_str.parse::<u32>().map(|level| { 
@@ -134,6 +111,14 @@ fn parse_volume(num_str: &str) -> Result<u32, ParseIntError>
             return 100;
         }
         return level;
+    });
+}
+
+fn parse_seek(seek_str: &str) -> Result<i64, ParseIntError>
+{
+    //let neg = seek_str.starts_with("-");
+    return seek_str.parse::<i64>().map(|seek| { 
+        return seek;
     });
 }
 
@@ -201,15 +186,197 @@ fn generic_handler(_js: serde_json::Value)
     //println!("{:#?}", _js);
 }
 
+pub fn parse_cmd(args: &Vec<String>,
+                 cur_track_progress: u64,
+                 cur_track_total: u64)
+    -> Option<(/* namespace */ String,
+               /* method */ String,
+               /* arguments */ String,
+               /* resp_handler */ fn(serde_json::Value))>
+{
+    let namespace: &str;
+    let method: &str;
+    let mut arguments = String::new();
+    let mut resp_handler: fn(serde_json::Value) = generic_handler;
+    let cmd = args[1].as_str();
+
+    // figure out the command to run and build the command data
+    match cmd {
+        "help" => {
+            usage(args);
+            return None;
+        }
+        "status" => {
+            namespace = "playback";
+            method = "getPlaybackState";
+            resp_handler = get_playback_state_handler;
+        }
+        "play" | "pause" => {
+            namespace = "playback";
+            method = "playPause";
+        }
+        "next" => {
+            namespace = "playback";
+            method = "forward";
+        }
+        "prev" => {
+            namespace = "playback";
+            method = "rewind";
+        }
+        "rewind" => {
+            namespace = "playback";
+            method = "setCurrentTime";
+            arguments.push_str("[0]");
+        }
+        "seek" => {
+            if args.len() != 3 {
+                println!("ERROR: Must provide seek value");
+                return None;
+            }
+            namespace = "playback";
+            method = "setCurrentTime";
+
+            let mut seek_to: i64 = cur_track_progress as i64;
+            let seek_amount: i64;
+
+            if args[2].as_str() == "forward" {
+                seek_amount = 10000; /* 10s */
+            } else if args[2].as_str() == "backward" {
+                seek_amount = -10000; /* 10s */
+            } else {
+                match parse_seek(&args[2]) {
+                    Ok(n) => seek_amount = n * 1000, /* convert to ms */
+                    Err(_err) => {
+                            println!("ERROR: Failed to parse seek value");
+                            return None;
+                    }
+                }
+            }
+
+            seek_to += seek_amount; /* up or down */
+            if seek_to > cur_track_total as i64 {
+                seek_to = cur_track_total as i64;
+            } else if seek_to < 0 {
+                seek_to = 0;
+            }
+
+            arguments.push_str(&format!(r#"[{}]"#, seek_to));
+        }
+        "thumbs" => {
+            if args.len() != 3 {
+                println!("ERROR: Must provide thumbs rating");
+                return None;
+            }
+            namespace = "rating";
+            if args[2].as_str() == "up" {
+                method = "toggleThumbsUp";
+            } else if args[2].as_str() == "down" {
+                method = "toggleThumbsDown";
+            } else {
+                println!("ERROR: Invalid thumbs rating");
+                return None;
+            }
+        }
+        "shuffle" => {
+            if args.len() != 3 {
+                println!("ERROR: Must provide shuffle mode");
+                return None;
+            }
+            namespace = "playback";
+            method = "setShuffle";
+            if args[2].as_str() == "on" {
+                arguments.push_str(r#"["ALL_SHUFFLE"]"#);
+            } else if args[2].as_str() == "off" {
+                arguments.push_str(r#"["NO_SHUFFLE"]"#);
+            } else {
+                println!("ERROR: Invalid shuffle mode");
+                return None;
+            }
+        }
+        "repeat" => {
+            if args.len() != 3 {
+                println!("ERROR: Must provide repeat mode");
+                return None;
+            }
+            namespace = "playback";
+            method = "setRepeat";
+            if args[2] == "all" {
+                arguments.push_str(r#"["LIST_REPEAT"]"#);
+            } else if args[2].as_str() == "single" {
+                arguments.push_str(r#"["SINGLE_REPEAT"]"#);
+            } else if args[2].as_str() == "off" {
+                arguments.push_str(r#"["NO_REPEAT"]"#);
+            } else {
+                println!("ERROR: Invalid repeat mode");
+                return None;
+            }
+        }
+        "queue" => {
+            namespace = "queue";
+            method = "getTracks";
+            resp_handler = get_tracks_handler;
+        }
+        "clear" => {
+            namespace = "queue";
+            method = "clear";
+        }
+        "playlists" => {
+            namespace = "playlists";
+            method = "getAll";
+            resp_handler = get_all_playlists_handler;
+        }
+        "search" => {
+            if args.len() != 3 {
+                println!("ERROR: Must provide search string");
+                return None;
+            }
+            namespace = "search";
+            method = "performSearch";
+            resp_handler = perform_search_handler;
+            arguments.push_str(&format!(r#"["{}"]"#, args[2]));
+        }
+        "volume" => {
+            namespace = "volume";
+            if args.len() == 3 {
+                if args[2] == "up" {
+                    method = "increaseVolume";
+                    arguments.push_str("[10]");
+                } else if args[2] == "down" {
+                    method = "decreaseVolume";
+                    arguments.push_str("[10]");
+                } else {
+                    method = "setVolume";
+                    match parse_volume(&args[2]) {
+                        Ok(n) => arguments.push_str(&format!("[{}]", n)),
+                        Err(_err) => {
+                            println!("ERROR: Failed to parse volume level");
+                            return None;
+                        }
+                    }
+                }
+            } else {
+                method = "getVolume";
+                resp_handler = get_volume_handler;
+            }
+        }
+        _ => {
+            println!("ERROR: unknown command '{}'", cmd);
+            return None;
+        }
+    }
+
+    return Some((namespace.to_string(),
+                 method.to_string(),
+                 arguments,
+                 resp_handler));
+}
+
 struct Client
 {
     out: ws::Sender,
-    namespace: String,
-    method: String,
-    arguments: String,
-    resp: fn(serde_json::Value),
-    cmd: String,
- 
+    args: Vec<String>,
+    resp_handler: fn(serde_json::Value),
+    is_status_cmd: bool,
     cur_volume: u64,
     cur_shuffle: String,
     cur_repeat: String,
@@ -220,6 +387,56 @@ struct Client
     cur_track_total: u64,
     cur_track_liked: bool,
     cur_track_disliked: bool,
+    got_all_channels: bool,
+    cmd_sent: bool,
+}
+
+impl Client
+{
+    pub fn new(out: ws::Sender, args: &Vec<String>) -> Client
+    {
+        Client {
+            out: out,
+            args: args.clone(),
+            resp_handler: generic_handler,
+            is_status_cmd: args[1].as_str() == "status",
+            cur_volume: 0,
+            cur_shuffle: "".to_string(),
+            cur_repeat: "".to_string(),
+            cur_track_artist: "".to_string(),
+            cur_track_album: "".to_string(),
+            cur_track_title: "".to_string(),
+            cur_track_progress: 0,
+            cur_track_total: 0,
+            cur_track_liked: false,
+            cur_track_disliked: false,
+            got_all_channels: false,
+            cmd_sent: false,
+        }
+    }
+
+    pub fn send_cmd(&mut self,
+                    namespace: &str,
+                    method: &str,
+                    arguments: &str) -> Result<(), ws::Error>
+    {
+        let mut req = String::new();
+        if arguments.is_empty() {
+            req.push_str(&format!(r#"{{ "{}":"{}", "{}":"{}", "{}":{} }}"#,
+                                  "namespace", namespace,
+                                  "method", method,
+                                  "requestID", REQUEST_ID.to_string()));
+        } else {
+            req.push_str(&format!(r#"{{ "{}":"{}", "{}":"{}", "{}":{}, "{}":{} }}"#,
+                                  "namespace", namespace,
+                                  "method", method,
+                                  "requestID", REQUEST_ID.to_string(),
+                                  "arguments", arguments));
+        }
+
+        //println!("{}", req);
+        return self.out.send(req);
+    }
 }
 
 impl ws::Handler for Client
@@ -236,10 +453,6 @@ impl ws::Handler for Client
         if let Err(_) = self.out.send(auth) {
             println!("ERROR: failed to send auth message");
         } else {
-            send_cmd(&self.out,
-                     &self.namespace,
-                     &self.method,
-                     &self.arguments)?;
         }
 
         return Ok(());
@@ -255,7 +468,7 @@ impl ws::Handler for Client
         let js: serde_json::Value =
             serde_json::from_str(&msg.into_text().unwrap()).unwrap();
         //println!("{:#?}", js);
-        if self.cmd == "status" && js.get("channel") != None {
+        if js.get("channel") != None {
             let payload = js.get("payload").unwrap();
             match js.get("channel").unwrap().as_str().unwrap() {
                 "volume" => {
@@ -293,6 +506,17 @@ impl ws::Handler for Client
                 "repeat" => {
                     self.cur_repeat = payload.as_str().unwrap().to_string();
                 }
+                "library" => {
+                    /* XXX HACK!
+                     * The last channel record seems to always be
+                     * the "library". Once we recieve this then we can parse
+                     * and send the user command. Probably better to track
+                     * which channels we've received and after all have been
+                     * seen then send the command. This would remove any
+                     * notion of order.
+                     */
+                    self.got_all_channels = true;
+                }
                 "API_VERSION" |
                 "playState" |
                 "queue" |
@@ -302,26 +526,50 @@ impl ws::Handler for Client
                 "settings:theme" |
                 "settings:themeType" |
                 "playlists" |
-                "library" |
                 _ => {
                     //println!("{:#?}", js);
                 }
             }
         }
 
-        if js.get("requestID") != None &&
+        if self.got_all_channels && !self.cmd_sent {
+            let (_n, _m, _a, _r) =
+                parse_cmd(&self.args,
+                          self.cur_track_progress,
+                          self.cur_track_total).unwrap();
+            self.resp_handler = _r;
+            self.cmd_sent = true;
+            self.send_cmd(&_n, &_m, &_a)?;
+        }
+
+        if self.cmd_sent &&
+           js.get("requestID") != None &&
            js.get("requestID").unwrap() == REQUEST_ID {
             self.out.close(ws::CloseCode::Normal).unwrap(); // close connection
             //println!("Got the response!");
             //println!("{:#?}", js);
-            (self.resp)(js);
+            (self.resp_handler)(js);
 
-            if self.cmd == "status" {
+            let fmt_time = |ms| {
+                let t = ms / 1000; /* convert ms to secs */
+                let h = 3600; /* secs in an hour */
+                let m = 60; /* secs in a minute */
+                if t >= h { /* >= 1 hour */
+                    format!("{}:{}:{:02}", (t / h), ((t % h) / m), ((t % h) % m))
+                } else if t >= m { /* >= 1 minute */
+                    format!("{}:{:02}", (t / m), (t % m))
+                } else { /* < 1 minute */
+                    format!("0:{:02}", t)
+                }
+            };
+
+            if self.is_status_cmd {
                 println!("artist: {}", self.cur_track_artist);
                 println!("album: {}", self.cur_track_album);
                 println!("title: {}", self.cur_track_title);
-                println!("time: {}/{}",
-                         self.cur_track_progress, self.cur_track_total);
+                println!("time: {} / {}",
+                         fmt_time(self.cur_track_progress),
+                         fmt_time(self.cur_track_total));
                 println!("rating: {}",
                          if self.cur_track_liked { "up" }
                          else if self.cur_track_disliked { "down" }
@@ -343,7 +591,7 @@ impl ws::Handler for Client
     }
 }
 
-fn usage(args: Vec<String>)
+fn usage(args: &Vec<String>)
 {
     println!("Usage: {} <command> [ args ]", args[0]);
     println!("  help");
@@ -352,6 +600,8 @@ fn usage(args: Vec<String>)
     println!("  pause");
     println!("  next");
     println!("  prev");
+    println!("  rewind");
+    println!("  seek [ +<secs> | -<secs> | forward | backward ]");
     println!("  thumbs < up | down >");
     println!("  shuffle < on | off >");
     println!("  repeat < all | single | off >");
@@ -369,166 +619,13 @@ fn main()
 
     if args.len() < 2 {
         println!("ERROR: invalid command line args!");
-        usage(args);
+        usage(&args);
         return;
     }
 
-    let namespace: &str;
-    let method: &str;
-    let mut arguments = String::new();
-    let resp: fn(serde_json::Value);
-    let cmd = args[1].as_str();
-
-    // figure out the command to run and build the request string
-    match cmd {
-        "help" => {
-            usage(args);
-            return;
-        }
-        "status" => {
-            namespace = "playback";
-            method = "getPlaybackState";
-            resp = get_playback_state_handler;
-        }
-        "play" | "pause" => {
-            namespace = "playback";
-            method = "playPause";
-            resp = generic_handler;
-        }
-        "next" => {
-            namespace = "playback";
-            method = "forward";
-            resp = generic_handler;
-        }
-        "prev" => {
-            namespace = "playback";
-            method = "rewind";
-            resp = generic_handler;
-        }
-        "thumbs" => {
-            if args.len() != 3 {
-                println!("ERROR: Must provide thumbs rating");
-                return;
-            }
-            namespace = "rating";
-            if args[2].as_str() == "up" {
-                method = "toggleThumbsUp";
-            } else if args[2].as_str() == "down" {
-                method = "toggleThumbsDown";
-            } else {
-                println!("ERROR: Invalid thumbs rating");
-                return;
-            }
-            resp = generic_handler;
-        }
-        "shuffle" => {
-            if args.len() != 3 {
-                println!("ERROR: Must provide shuffle mode");
-                return;
-            }
-            namespace = "playback";
-            method = "setShuffle";
-            if args[2].as_str() == "on" {
-                arguments.push_str(r#"["ALL_SHUFFLE"]"#);
-            } else if args[2].as_str() == "off" {
-                arguments.push_str(r#"["NO_SHUFFLE"]"#);
-            } else {
-                println!("ERROR: Invalid shuffle mode");
-                return;
-            }
-            resp = generic_handler;
-        }
-        "repeat" => {
-            if args.len() != 3 {
-                println!("ERROR: Must provide repeat mode");
-                return;
-            }
-            namespace = "playback";
-            method = "setRepeat";
-            if args[2] == "all" {
-                arguments.push_str(r#"["LIST_REPEAT"]"#);
-            } else if args[2].as_str() == "single" {
-                arguments.push_str(r#"["SINGLE_REPEAT"]"#);
-            } else if args[2].as_str() == "off" {
-                arguments.push_str(r#"["NO_REPEAT"]"#);
-            } else {
-                println!("ERROR: Invalid repeat mode");
-                return;
-            }
-            resp = generic_handler;
-        }
-        "queue" => {
-            namespace = "queue";
-            method = "getTracks";
-            resp = get_tracks_handler;
-        }
-        "clear" => {
-            namespace = "queue";
-            method = "clear";
-            resp = generic_handler;
-        }
-        "playlists" => {
-            namespace = "playlists";
-            method = "getAll";
-            resp = get_all_playlists_handler;
-        }
-        "search" => {
-            if args.len() != 3 {
-                println!("ERROR: Must provide search string");
-                return;
-            }
-            namespace = "search";
-            method = "performSearch";
-            arguments.push_str(&format!("[\"{}\"]", args[2]));
-            resp = perform_search_handler;
-        }
-        "volume" => {
-            namespace = "volume";
-            if args.len() == 3 {
-                if args[2] == "up" {
-                    method = "increaseVolume";
-                    arguments.push_str("[10]");
-                } else if args[2] == "down" {
-                    method = "decreaseVolume";
-                    arguments.push_str("[10]");
-                } else {
-                    method = "setVolume";
-                    match parse_volume(&args[2]) {
-                        Ok(n) => arguments.push_str(&format!("[{}]", n)),
-                        Err(_err) => {
-                            println!("ERROR: failed to parse volume level");
-                            return;
-                        }
-                    }
-                }
-                resp = generic_handler;
-            } else {
-                method = "getVolume";
-                resp = get_volume_handler;
-            }
-        }
-        _ => {
-            println!("ERROR: unknown command '{}'", cmd);
-            return;
-        }
-    }
-
     // connect to the GPMPD websocket and call the closure
-    ws::connect(URL, |out| Client { out: out,
-                                    namespace: namespace.to_string(),
-                                    method: method.to_string(),
-                                    arguments: arguments.to_string(),
-                                    resp: resp,
-                                    cmd: cmd.to_string(),
-                                    cur_volume: 0,
-                                    cur_shuffle: "".to_string(),
-                                    cur_repeat: "".to_string(),
-                                    cur_track_artist: "".to_string(),
-                                    cur_track_album: "".to_string(),
-                                    cur_track_title: "".to_string(),
-                                    cur_track_progress: 0,
-                                    cur_track_total: 0,
-                                    cur_track_liked: false,
-                                    cur_track_disliked: false }).unwrap();
+    ws::connect(URL, |out| {
+        Client::new(out, &args)
+    }).unwrap();
 }
 
