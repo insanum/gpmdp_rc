@@ -143,7 +143,8 @@ fn get_tracks_handler(js: &str)
 {
     let tracks: serde_json::Value = serde_json::from_str(&js).unwrap();
     for i in 0..tracks.as_array().unwrap().len() {
-        println!("{}: {} - {}", (i + 1),
+        println!("{}: {} | {} | {}", (i + 1),
+                 tracks[i]["artist"].as_str().unwrap(),
                  tracks[i]["album"].as_str().unwrap(),
                  tracks[i]["title"].as_str().unwrap());
     }
@@ -245,7 +246,7 @@ pub fn parse_cmd(args: &Vec<String>,
             namespace = "playback";
             method = "rewind";
         }
-        "rewind" => {
+        "replay" => {
             namespace = "playback";
             method = "setCurrentTime";
             arguments.push_str("[0]");
@@ -642,9 +643,10 @@ impl ws::Handler for Client
                 println!("artist: {}", self.cur_track_artist);
                 println!("album: {}", self.cur_track_album);
                 println!("title: {}", self.cur_track_title);
-                println!("time: {} / {}",
-                         fmt_time(self.cur_track_progress),
-                         fmt_time(self.cur_track_total));
+                println!("time_elapsed_fmt: {}", fmt_time(self.cur_track_progress));
+                println!("time_elapsed_secs: {}", (self.cur_track_progress / 1000));
+                println!("time_total_fmt: {}", fmt_time(self.cur_track_total));
+                println!("time_total_secs: {}", (self.cur_track_total / 1000));
                 println!("rating: {}",
                          if self.cur_track_liked { "up" }
                          else if self.cur_track_disliked { "down" }
@@ -652,11 +654,24 @@ impl ws::Handler for Client
                 println!("volume: {}", self.cur_volume);
                 println!("shuffle: {}",
                          if self.cur_shuffle == "NO_SHUFFLE" { "off" }
-                         else { "all" });
+                         else { "on" });
                 println!("repeat: {}",
                          if self.cur_repeat == "LIST_REPEAT" { "all" }
                          else if self.cur_repeat == "SINGLE_REPEAT" { "single" }
                          else { "off" });
+                let tracks: serde_json::Value =
+                    serde_json::from_str(&self.cur_queue).unwrap();
+                let mut idx = 0;
+                for i in 0..tracks.as_array().unwrap().len() {
+                    if tracks[i]["artist"].as_str().unwrap() == self.cur_track_artist &&
+                       tracks[i]["album"].as_str().unwrap() == self.cur_track_album &&
+                       tracks[i]["title"].as_str().unwrap() == self.cur_track_title {
+                            idx = i + 1;
+                            break;
+                    }
+                }
+                println!("queue_track: {}", idx);
+                println!("queue_length: {}", tracks.as_array().unwrap().len());
             }
         }
 
@@ -675,7 +690,7 @@ fn usage(args: &Vec<String>)
     println!("  pause");
     println!("  next");
     println!("  prev");
-    println!("  rewind");
+    println!("  replay");
     println!("  seek [ +<secs> | -<secs> | forward | backward ]");
     println!("  thumbs < up | down >");
     println!("  shuffle < on | off >");
