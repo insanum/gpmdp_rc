@@ -162,24 +162,49 @@ fn get_all_playlists_handler(js: &str)
 fn perform_search_handler(js: serde_json::Value)
 {
     //println!("{:#?}", js);
-    let value = js.get("value").unwrap();
-
-    for artist in value.get("artists").unwrap().as_array().unwrap() {
-        println!("{}", artist["name"].as_str().unwrap());
+    let value: &serde_json::Value;
+    if js.get("value") == None {
+        value = &js;
+    } else {
+        value = js.get("value").unwrap();
     }
 
-    for album in value.get("albums").unwrap().as_array().unwrap() {
-        println!("{} - {}",
-                 album["artist"].as_str().unwrap(),
-                 album["name"].as_str().unwrap());
+    let mut j = 1;
+
+    let artists = value.get("artists").unwrap().as_array().unwrap();
+    if artists.len() > 0 {
+        for i in 0..artists.len() {
+            println!("{}: {}", (i + j),
+                     artists[i]["name"].as_str().unwrap());
+        }
+        j += artists.len();
     }
 
-    for track in value.get("tracks").unwrap().as_array().unwrap() {
-        println!("{} - {} - {}",
-                 track["artist"].as_str().unwrap(),
-                 track["album"].as_str().unwrap(),
-                 track["title"].as_str().unwrap());
+    let albums = value.get("albums").unwrap().as_array().unwrap();
+    if albums.len() > 0 {
+        for i in 0..albums.len() {
+            println!("{}: {} | {}", (i + j),
+                     albums[i]["artist"].as_str().unwrap(),
+                     albums[i]["name"].as_str().unwrap());
+        }
+        j += albums.len();
     }
+
+    let tracks = value.get("tracks").unwrap().as_array().unwrap();
+    if tracks.len() > 0 {
+        for i in 0..tracks.len() {
+            println!("{}: {} | {} | {}", (i + j),
+                     tracks[i]["artist"].as_str().unwrap(),
+                     tracks[i]["album"].as_str().unwrap(),
+                     tracks[i]["title"].as_str().unwrap());
+        }
+    }
+}
+
+fn list_search_results_handler(js: &str)
+{
+    let value: serde_json::Value = serde_json::from_str(&js).unwrap();
+    perform_search_handler(value);
 }
 
 fn get_volume_handler(js: serde_json::Value)
@@ -363,6 +388,21 @@ pub fn parse_cmd(args: &Vec<String>,
             resp_handler = perform_search_handler;
             arguments.push_str(&format!(r#"["{}"]"#, args[2]));
         }
+        "results" => {
+            if args.len() != 3 {
+                println!("ERROR: Must provide result number");
+                return None;
+            }
+            namespace = "search";
+            method = "playResult";
+            match parse_index_num(&args[2]) {
+                Ok(_n) => arguments.push_str(&args[2]),
+                Err(_err) => {
+                    println!("ERROR: Failed to parse result number");
+                    return None;
+                }
+            }
+        }
         "volume" => {
             namespace = "volume";
             if args.len() == 3 {
@@ -407,6 +447,7 @@ struct Client
     is_status_cmd: bool,
     is_queue_cmd: bool,
     is_playlists_cmd: bool,
+    is_result_no_txt_cmd: bool,
     cur_volume: u64,
     cur_shuffle: String,
     cur_repeat: String,
@@ -419,6 +460,7 @@ struct Client
     cur_track_disliked: bool,
     cur_queue: String,
     cur_playlists: String,
+    cur_search: String,
     got_all_channels: bool,
     cmd_sent: bool,
 }
@@ -434,6 +476,8 @@ impl Client
             is_status_cmd: args[1].as_str() == "status",
             is_queue_cmd: args[1].as_str() == "queue",
             is_playlists_cmd: args[1].as_str() == "playlists",
+            is_result_no_txt_cmd:
+                (args[1].as_str() == "results") && (args.len() == 2),
             cur_volume: 0,
             cur_shuffle: "".to_string(),
             cur_repeat: "".to_string(),
@@ -446,6 +490,7 @@ impl Client
             cur_track_disliked: false,
             cur_queue: "".to_string(),
             cur_playlists: "".to_string(),
+            cur_search: "".to_string(),
             got_all_channels: false,
             cmd_sent: false,
         }
@@ -548,6 +593,9 @@ impl ws::Handler for Client
                 "playlists" => {
                     self.cur_playlists = payload.to_string();
                 }
+                "search-results" => {
+                    self.cur_search = payload.to_string();
+                }
                 "library" => {
                     /* XXX HACK!
                      * The last channel record seems to always be
@@ -561,7 +609,6 @@ impl ws::Handler for Client
                 }
                 "API_VERSION" |
                 "playState" |
-                "search-results" |
                 "lyrics" |
                 "settings:themeColor" |
                 "settings:theme" |
@@ -584,6 +631,11 @@ impl ws::Handler for Client
 
                 self.out.close(ws::CloseCode::Normal).unwrap(); // close connection
                 get_all_playlists_handler(&self.cur_playlists);
+
+            } else if self.is_result_no_txt_cmd {
+
+                self.out.close(ws::CloseCode::Normal).unwrap(); // close connection
+                list_search_results_handler(&self.cur_search);
 
             } else {
 
@@ -610,6 +662,26 @@ impl ws::Handler for Client
                     let playlists: serde_json::Value =
                         serde_json::from_str(&self.cur_playlists).unwrap();
                     _a = format!("[{}]", playlists[playlist_num].to_string());
+                }
+
+                if _n == "search" && _m == "playResult" {
+                    let result_num = _a.parse::<usize>().unwrap() - 1;
+                    let results: serde_json::Value =
+                        serde_json::from_str(&self.cur_search).unwrap();
+                    let artists = results.get("artists").unwrap().as_array().unwrap();
+                    let albums = results.get("albums").unwrap().as_array().unwrap();
+                    let tracks = results.get("tracks").unwrap().as_array().unwrap();
+                    if result_num < artists.len() {
+                        _a = format!("[{}]", artists[result_num].to_string());
+                    } else if result_num < (artists.len() + albums.len()) {
+                        _a = format!("[{}]", albums[result_num - artists.len()].to_string());
+                    } else if result_num < (artists.len() + albums.len() + tracks.len()) {
+                        _a = format!("[{}]", tracks[result_num - artists.len() - albums.len()].to_string());
+                    } else {
+                        self.out.close(ws::CloseCode::Normal).unwrap(); // close connection
+                        println!("ERROR: invalid result number");
+                        return Ok(());
+                    }
                 }
 
                 self.resp_handler = _r;
@@ -686,7 +758,7 @@ fn usage(args: &Vec<String>)
     println!("Usage: {} <command> [ args ]", args[0]);
     println!("  help");
     println!("  status");
-    println!("  play [ track# ]");
+    println!("  play [ <track#> ]");
     println!("  pause");
     println!("  next");
     println!("  prev");
@@ -700,6 +772,7 @@ fn usage(args: &Vec<String>)
     println!("  playlists");
     println!("  playlist <playlist#>");
     println!("  search \"<text>\"");
+    println!("  results [ <result#> ]");
     println!("  volume [ <0-100> | up | down ]");
 }
 
