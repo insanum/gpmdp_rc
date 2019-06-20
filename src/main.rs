@@ -150,6 +150,15 @@ fn get_tracks_handler(js: &str)
     }
 }
 
+fn lyrics_handler(lyrics: &str)
+{
+    if lyrics.is_empty() {
+        println!("Lyrics not available!");
+    } else {
+        println!("{}", lyrics);
+    }
+}
+
 fn get_all_playlists_handler(js: &str)
 {
     let playlists: serde_json::Value = serde_json::from_str(&js).unwrap();
@@ -445,6 +454,7 @@ struct Client
     args: Vec<String>,
     resp_handler: fn(serde_json::Value),
     is_status_cmd: bool,
+    is_lyrics_cmd: bool,
     is_queue_cmd: bool,
     is_playlists_cmd: bool,
     is_result_no_txt_cmd: bool,
@@ -454,6 +464,7 @@ struct Client
     cur_track_artist: String,
     cur_track_album: String,
     cur_track_title: String,
+    cur_track_lyrics: String,
     cur_track_progress: u64,
     cur_track_total: u64,
     cur_track_liked: bool,
@@ -474,6 +485,7 @@ impl Client
             args: args.clone(),
             resp_handler: generic_handler,
             is_status_cmd: args[1].as_str() == "status",
+            is_lyrics_cmd: args[1].as_str() == "lyrics",
             is_queue_cmd: args[1].as_str() == "queue",
             is_playlists_cmd: args[1].as_str() == "playlists",
             is_result_no_txt_cmd:
@@ -484,6 +496,7 @@ impl Client
             cur_track_artist: "".to_string(),
             cur_track_album: "".to_string(),
             cur_track_title: "".to_string(),
+            cur_track_lyrics: "".to_string(),
             cur_track_progress: 0,
             cur_track_total: 0,
             cur_track_liked: false,
@@ -569,6 +582,9 @@ impl ws::Handler for Client
                             payload.get("title").unwrap().as_str().unwrap().to_string();
                     }
                 }
+                "lyrics" => {
+                    self.cur_track_lyrics = payload.as_str().unwrap().to_string();
+                }
                 "time" => {
                     self.cur_track_progress =
                         payload.get("current").unwrap().as_u64().unwrap();
@@ -587,11 +603,11 @@ impl ws::Handler for Client
                 "repeat" => {
                     self.cur_repeat = payload.as_str().unwrap().to_string();
                 }
-                "queue" => {
-                    self.cur_queue = payload.to_string();
-                }
                 "playlists" => {
                     self.cur_playlists = payload.to_string();
+                }
+                "queue" => {
+                    self.cur_queue = payload.to_string();
                 }
                 "search-results" => {
                     self.cur_search = payload.to_string();
@@ -609,7 +625,6 @@ impl ws::Handler for Client
                 }
                 "API_VERSION" |
                 "playState" |
-                "lyrics" |
                 "settings:themeColor" |
                 "settings:theme" |
                 "settings:themeType" |
@@ -626,6 +641,11 @@ impl ws::Handler for Client
 
                 self.out.close(ws::CloseCode::Normal).unwrap(); // close connection
                 get_tracks_handler(&self.cur_queue);
+
+            } else if self.is_lyrics_cmd {
+
+                self.out.close(ws::CloseCode::Normal).unwrap(); // close connection
+                lyrics_handler(&self.cur_track_lyrics);
 
             } else if self.is_playlists_cmd {
 
@@ -764,6 +784,7 @@ fn usage(args: &Vec<String>)
     println!("  prev");
     println!("  replay");
     println!("  seek [ +<secs> | -<secs> | forward | backward ]");
+    println!("  lyrics");
     println!("  thumbs < up | down >");
     println!("  shuffle < on | off >");
     println!("  repeat < all | single | off >");
