@@ -583,7 +583,9 @@ impl ws::Handler for Client
                     }
                 }
                 "lyrics" => {
-                    self.cur_track_lyrics = payload.as_str().unwrap().to_string();
+                    if !payload.is_null() {
+                        self.cur_track_lyrics = payload.as_str().unwrap().to_string();
+                    }
                 }
                 "time" => {
                     self.cur_track_progress =
