@@ -4,6 +4,14 @@ extern crate serde_json;
 
 use std::env;
 use std::num::ParseIntError;
+use std::io::{Error, ErrorKind};
+
+/* XXX Todo...
+ * - automate the auth process for easy setup
+ * - read the token from a config file
+ * - app name and url can come from the config file as well (or defaults)
+ * - change "cli" to "gpmdp_rc"
+ */
 
 static APP_NAME: &str  = "cli";
 static TOKEN: &str     = "be3363fa-0fe3-49de-9c97-3310d66cd3ac";
@@ -230,10 +238,11 @@ fn generic_handler(_js: serde_json::Value)
 pub fn parse_cmd(args: &Vec<String>,
                  cur_track_progress: u64,
                  cur_track_total: u64)
-    -> Option<(/* namespace */ String,
+    -> Result<(/* namespace */ String,
                /* method */ String,
                /* arguments */ String,
-               /* resp_handler */ fn(serde_json::Value))>
+               /* resp_handler */ fn(serde_json::Value)),
+              String>
 {
     let namespace: &str;
     let method: &str;
@@ -243,10 +252,6 @@ pub fn parse_cmd(args: &Vec<String>,
 
     // figure out the command to run and build the command data
     match cmd {
-        "help" => {
-            usage(args);
-            return None;
-        }
         "status" => {
             namespace = "playback";
             method = "getPlaybackState";
@@ -259,8 +264,7 @@ pub fn parse_cmd(args: &Vec<String>,
                 match parse_index_num(&args[2]) {
                     Ok(_n) => arguments.push_str(&args[2]),
                     Err(_err) => {
-                        println!("ERROR: Failed to parse track number");
-                        return None;
+                        return Err("failed to parse track number".to_string());
                     }
                 }
             } else {
@@ -287,8 +291,7 @@ pub fn parse_cmd(args: &Vec<String>,
         }
         "seek" => {
             if args.len() != 3 {
-                println!("ERROR: Must provide seek value");
-                return None;
+                return Err("must provide seek value".to_string());
             }
             namespace = "playback";
             method = "setCurrentTime";
@@ -304,8 +307,7 @@ pub fn parse_cmd(args: &Vec<String>,
                 match parse_seek(&args[2]) {
                     Ok(n) => seek_amount = n * 1000, /* convert to ms */
                     Err(_err) => {
-                            println!("ERROR: Failed to parse seek value");
-                            return None;
+                        return Err("failed to parse seek value".to_string());
                     }
                 }
             }
@@ -321,8 +323,7 @@ pub fn parse_cmd(args: &Vec<String>,
         }
         "thumbs" => {
             if args.len() != 3 {
-                println!("ERROR: Must provide thumbs rating");
-                return None;
+                return Err("must provide thumbs rating".to_string());
             }
             namespace = "rating";
             if args[2].as_str() == "up" {
@@ -330,14 +331,12 @@ pub fn parse_cmd(args: &Vec<String>,
             } else if args[2].as_str() == "down" {
                 method = "toggleThumbsDown";
             } else {
-                println!("ERROR: Invalid thumbs rating");
-                return None;
+                return Err("invalid thumbs rating".to_string());
             }
         }
         "shuffle" => {
             if args.len() != 3 {
-                println!("ERROR: Must provide shuffle mode");
-                return None;
+                return Err("must provide shuffle mode".to_string());
             }
             namespace = "playback";
             method = "setShuffle";
@@ -346,14 +345,12 @@ pub fn parse_cmd(args: &Vec<String>,
             } else if args[2].as_str() == "off" {
                 arguments.push_str(r#"["NO_SHUFFLE"]"#);
             } else {
-                println!("ERROR: Invalid shuffle mode");
-                return None;
+                return Err("invalid shuffle mode".to_string());
             }
         }
         "repeat" => {
             if args.len() != 3 {
-                println!("ERROR: Must provide repeat mode");
-                return None;
+                return Err("must provide repeat mode".to_string());
             }
             namespace = "playback";
             method = "setRepeat";
@@ -364,8 +361,7 @@ pub fn parse_cmd(args: &Vec<String>,
             } else if args[2].as_str() == "off" {
                 arguments.push_str(r#"["NO_REPEAT"]"#);
             } else {
-                println!("ERROR: Invalid repeat mode");
-                return None;
+                return Err("invalid repeat mode".to_string());
             }
         }
         "clear" => {
@@ -374,23 +370,20 @@ pub fn parse_cmd(args: &Vec<String>,
         }
         "playlist" => {
             if args.len() != 3 {
-                println!("ERROR: Must provide a playlist number");
-                return None;
+                return Err("must provide a playlist number".to_string());
             }
             namespace = "playlists";
             method = "play";
             match parse_index_num(&args[2]) {
                 Ok(_n) => arguments.push_str(&args[2]),
                 Err(_err) => {
-                    println!("ERROR: Failed to parse playlist number");
-                    return None;
+                    return Err("failed to parse playlist number".to_string());
                 }
             }
         }
         "search" => {
             if args.len() != 3 {
-                println!("ERROR: Must provide search string");
-                return None;
+                return Err("must provide search string".to_string());
             }
             namespace = "search";
             method = "performSearch";
@@ -399,16 +392,14 @@ pub fn parse_cmd(args: &Vec<String>,
         }
         "results" => {
             if args.len() != 3 {
-                println!("ERROR: Must provide result number");
-                return None;
+                return Err("must provide result number".to_string());
             }
             namespace = "search";
             method = "playResult";
             match parse_index_num(&args[2]) {
                 Ok(_n) => arguments.push_str(&args[2]),
                 Err(_err) => {
-                    println!("ERROR: Failed to parse result number");
-                    return None;
+                    return Err("failed to parse result number".to_string());
                 }
             }
         }
@@ -426,8 +417,7 @@ pub fn parse_cmd(args: &Vec<String>,
                     match parse_volume(&args[2]) {
                         Ok(n) => arguments.push_str(&format!("[{}]", n)),
                         Err(_err) => {
-                            println!("ERROR: Failed to parse volume level");
-                            return None;
+                            return Err("failed to parse volume level".to_string());
                         }
                     }
                 }
@@ -437,15 +427,14 @@ pub fn parse_cmd(args: &Vec<String>,
             }
         }
         _ => {
-            println!("ERROR: unknown command '{}'", cmd);
-            return None;
+            return Err(format!("unknown command '{}'", cmd));
         }
     }
 
-    return Some((namespace.to_string(),
-                 method.to_string(),
-                 arguments,
-                 resp_handler));
+    return Ok((namespace.to_string(),
+               method.to_string(),
+               arguments,
+               resp_handler));
 }
 
 struct Client
@@ -545,8 +534,7 @@ impl ws::Handler for Client
         //println!("{}", auth);
 
         if let Err(_) = self.out.send(auth) {
-            println!("ERROR: failed to send auth message");
-        } else {
+            return Err(ws::Error::from(Error::new(ErrorKind::Other, "failed to send auth message")));
         }
 
         return Ok(());
@@ -554,8 +542,15 @@ impl ws::Handler for Client
 
     fn on_error(&mut self, err: ws::Error)
     {
-        println!("ERROR: websocket failed ({})", err);
+        println!("ERROR: {}", err);
     }
+
+    /*
+    fn on_timeout(&mut self, event: ws::util::Token) -> ws::Result<()>
+    {
+        /* XXX */
+    }
+    */
 
     fn on_message(&mut self, msg: ws::Message) -> ws::Result<()>
     {
@@ -665,11 +660,11 @@ impl ws::Handler for Client
                     match parse_cmd(&self.args,
                                     self.cur_track_progress,
                                     self.cur_track_total) {
-                        None => {
+                        Err(e) => {
                             self.out.close(ws::CloseCode::Normal).unwrap(); // close connection
-                            return Ok(());
+                            return Err(ws::Error::from(Error::new(ErrorKind::Other, e)));
                         },
-                        Some(x) => { x },
+                        Ok(x) => { x }
                     };
 
                 if _n == "queue" && _m == "playTrack" {
@@ -678,15 +673,13 @@ impl ws::Handler for Client
                         serde_json::from_str(&self.cur_queue).unwrap();
                     _a = format!("[{}]", tracks[track_num].to_string());
                 }
-
-                if _n == "playlists" && _m == "play" {
+                else if _n == "playlists" && _m == "play" {
                     let playlist_num = _a.parse::<usize>().unwrap() - 1;
                     let playlists: serde_json::Value =
                         serde_json::from_str(&self.cur_playlists).unwrap();
                     _a = format!("[{}]", playlists[playlist_num].to_string());
                 }
-
-                if _n == "search" && _m == "playResult" {
+                else if _n == "search" && _m == "playResult" {
                     let result_num = _a.parse::<usize>().unwrap() - 1;
                     let results: serde_json::Value =
                         serde_json::from_str(&self.cur_search).unwrap();
@@ -701,13 +694,13 @@ impl ws::Handler for Client
                         _a = format!("[{}]", tracks[result_num - artists.len() - albums.len()].to_string());
                     } else {
                         self.out.close(ws::CloseCode::Normal).unwrap(); // close connection
-                        println!("ERROR: invalid result number");
-                        return Ok(());
+                        //println!("ERROR: invalid result number");
+                        return Err(ws::Error::from(Error::new(ErrorKind::Other, "invalid result number")));
                     }
                 }
 
                 self.resp_handler = _r;
-                self.send_cmd(&_n, &_m, &_a)?;
+                return self.send_cmd(&_n, &_m, &_a);
 
             }
         }
@@ -769,8 +762,6 @@ impl ws::Handler for Client
             }
         }
 
-        /* XXX need to handle timeouts... */
-
         return Ok(());
     }
 }
@@ -807,12 +798,20 @@ fn main()
     if args.len() < 2 {
         println!("ERROR: invalid command line args!");
         usage(&args);
-        return;
+        std::process::exit(1);
+    }
+
+    if args[1] == "help" {
+        usage(&args);
+        std::process::exit(0);
     }
 
     // connect to the GPMPD websocket and call the closure
-    ws::connect(URL, |out| {
+    match ws::connect(URL, |out| {
         Client::new(out, &args)
-    }).unwrap();
+    }) {
+        Ok(_)  => std::process::exit(0),
+        Err(_) => std::process::exit(1)
+    }
 }
 
