@@ -1,22 +1,42 @@
 
+extern crate getopts;
 extern crate ws;
 extern crate serde_json;
+extern crate yaml_rust;
 
 use std::env;
+use std::fs;
+use std::io;
+use std::io::Write;
 use std::num::ParseIntError;
 use std::io::{Error, ErrorKind};
+use getopts::Options;
+use yaml_rust::{Yaml, YamlLoader};
 
 /* XXX Todo...
- * - automate the auth process for easy setup
- * - read the token from a config file
- * - app name and url can come from the config file as well (or defaults)
- * - change "cli" to "gpmdp_rc"
+ * - only wait and process channels that we care about based on the command
  */
 
-static APP_NAME: &str  = "cli";
-static TOKEN: &str     = "be3363fa-0fe3-49de-9c97-3310d66cd3ac";
-static URL: &str       = "ws://127.0.0.1:5672";
-static REQUEST_ID: u32 = 13;
+static APP_NAME: &str = "gpmdp_rc";
+
+fn get_config(file: &str) -> Option<std::vec::Vec<Yaml>>
+{
+    let s = match fs::read_to_string(file) {
+        Ok(s) => { s }
+        Err(_err) => {
+            println!("ERROR: failed to read config file");
+            return None;
+        }
+    };
+
+    match YamlLoader::load_from_str(&s) {
+        Ok(yaml) => Some(yaml),
+        Err(_err) => {
+            println!("ERROR: failed to parse config file");
+            return None;
+        }
+    }
+}
 
 /*
  * x volume.getVolume()               0-100
@@ -136,6 +156,17 @@ fn parse_index_num(index_num_str: &str) -> Result<u32, ParseIntError>
     });
 }
 
+fn auth_handler() -> String
+{
+    let mut code = String::new();
+    print!("Enter the 4-digit code from GPMDP: ");
+    io::stdout().flush().unwrap();
+    io::stdin().read_line(&mut code).expect("invalid code");
+    if let Some('\n') = code.chars().next_back() { code.pop(); }
+    if let Some('\r') = code.chars().next_back() { code.pop(); }
+    return code;
+}
+
 fn get_playback_state_handler(js: serde_json::Value)
 {
     let value = js.get("value").unwrap().as_u64().unwrap();
@@ -235,7 +266,7 @@ fn generic_handler(_js: serde_json::Value)
     //println!("{:#?}", _js);
 }
 
-pub fn parse_cmd(args: &Vec<String>,
+pub fn parse_cmd(cmd: &Vec<String>,
                  cur_track_progress: u64,
                  cur_track_total: u64)
     -> Result<(/* namespace */ String,
@@ -248,21 +279,20 @@ pub fn parse_cmd(args: &Vec<String>,
     let method: &str;
     let mut arguments = String::new();
     let mut resp_handler: fn(serde_json::Value) = generic_handler;
-    let cmd = args[1].as_str();
 
     // figure out the command to run and build the command data
-    match cmd {
+    match cmd[0].as_str() {
         "status" => {
             namespace = "playback";
             method = "getPlaybackState";
             resp_handler = get_playback_state_handler;
         }
         "play" => {
-            if args.len() == 3 {
+            if cmd.len() == 2 {
                 namespace = "queue";
                 method = "playTrack";
-                match parse_index_num(&args[2]) {
-                    Ok(_n) => arguments.push_str(&args[2]),
+                match parse_index_num(&cmd[1]) {
+                    Ok(_n) => arguments.push_str(&cmd[1]),
                     Err(_err) => {
                         return Err("failed to parse track number".to_string());
                     }
@@ -290,7 +320,7 @@ pub fn parse_cmd(args: &Vec<String>,
             arguments.push_str("[0]");
         }
         "seek" => {
-            if args.len() != 3 {
+            if cmd.len() != 2 {
                 return Err("must provide seek value".to_string());
             }
             namespace = "playback";
@@ -299,12 +329,12 @@ pub fn parse_cmd(args: &Vec<String>,
             let mut seek_to: i64 = cur_track_progress as i64;
             let seek_amount: i64;
 
-            if args[2].as_str() == "forward" {
+            if cmd[1].as_str() == "forward" {
                 seek_amount = 10000; /* 10s */
-            } else if args[2].as_str() == "backward" {
+            } else if cmd[1].as_str() == "backward" {
                 seek_amount = -10000; /* 10s */
             } else {
-                match parse_seek(&args[2]) {
+                match parse_seek(&cmd[1]) {
                     Ok(n) => seek_amount = n * 1000, /* convert to ms */
                     Err(_err) => {
                         return Err("failed to parse seek value".to_string());
@@ -322,43 +352,43 @@ pub fn parse_cmd(args: &Vec<String>,
             arguments.push_str(&format!(r#"[{}]"#, seek_to));
         }
         "thumbs" => {
-            if args.len() != 3 {
+            if cmd.len() != 2 {
                 return Err("must provide thumbs rating".to_string());
             }
             namespace = "rating";
-            if args[2].as_str() == "up" {
+            if cmd[1].as_str() == "up" {
                 method = "toggleThumbsUp";
-            } else if args[2].as_str() == "down" {
+            } else if cmd[1].as_str() == "down" {
                 method = "toggleThumbsDown";
             } else {
                 return Err("invalid thumbs rating".to_string());
             }
         }
         "shuffle" => {
-            if args.len() != 3 {
+            if cmd.len() != 2 {
                 return Err("must provide shuffle mode".to_string());
             }
             namespace = "playback";
             method = "setShuffle";
-            if args[2].as_str() == "on" {
+            if cmd[1].as_str() == "on" {
                 arguments.push_str(r#"["ALL_SHUFFLE"]"#);
-            } else if args[2].as_str() == "off" {
+            } else if cmd[1].as_str() == "off" {
                 arguments.push_str(r#"["NO_SHUFFLE"]"#);
             } else {
                 return Err("invalid shuffle mode".to_string());
             }
         }
         "repeat" => {
-            if args.len() != 3 {
+            if cmd.len() != 2 {
                 return Err("must provide repeat mode".to_string());
             }
             namespace = "playback";
             method = "setRepeat";
-            if args[2] == "all" {
+            if cmd[1] == "all" {
                 arguments.push_str(r#"["LIST_REPEAT"]"#);
-            } else if args[2].as_str() == "single" {
+            } else if cmd[1].as_str() == "single" {
                 arguments.push_str(r#"["SINGLE_REPEAT"]"#);
-            } else if args[2].as_str() == "off" {
+            } else if cmd[1].as_str() == "off" {
                 arguments.push_str(r#"["NO_REPEAT"]"#);
             } else {
                 return Err("invalid repeat mode".to_string());
@@ -369,35 +399,35 @@ pub fn parse_cmd(args: &Vec<String>,
             method = "clear";
         }
         "playlist" => {
-            if args.len() != 3 {
+            if cmd.len() != 2 {
                 return Err("must provide a playlist number".to_string());
             }
             namespace = "playlists";
             method = "play";
-            match parse_index_num(&args[2]) {
-                Ok(_n) => arguments.push_str(&args[2]),
+            match parse_index_num(&cmd[1]) {
+                Ok(_n) => arguments.push_str(&cmd[1]),
                 Err(_err) => {
                     return Err("failed to parse playlist number".to_string());
                 }
             }
         }
         "search" => {
-            if args.len() != 3 {
+            if cmd.len() != 2 {
                 return Err("must provide search string".to_string());
             }
             namespace = "search";
             method = "performSearch";
             resp_handler = perform_search_handler;
-            arguments.push_str(&format!(r#"["{}"]"#, args[2]));
+            arguments.push_str(&format!(r#"["{}"]"#, cmd[1]));
         }
         "results" => {
-            if args.len() != 3 {
+            if cmd.len() != 2 {
                 return Err("must provide result number".to_string());
             }
             namespace = "search";
             method = "playResult";
-            match parse_index_num(&args[2]) {
-                Ok(_n) => arguments.push_str(&args[2]),
+            match parse_index_num(&cmd[1]) {
+                Ok(_n) => arguments.push_str(&cmd[1]),
                 Err(_err) => {
                     return Err("failed to parse result number".to_string());
                 }
@@ -405,16 +435,16 @@ pub fn parse_cmd(args: &Vec<String>,
         }
         "volume" => {
             namespace = "volume";
-            if args.len() == 3 {
-                if args[2] == "up" {
+            if cmd.len() == 2 {
+                if cmd[1] == "up" {
                     method = "increaseVolume";
                     arguments.push_str("[10]");
-                } else if args[2] == "down" {
+                } else if cmd[1] == "down" {
                     method = "decreaseVolume";
                     arguments.push_str("[10]");
                 } else {
                     method = "setVolume";
-                    match parse_volume(&args[2]) {
+                    match parse_volume(&cmd[1]) {
                         Ok(n) => arguments.push_str(&format!("[{}]", n)),
                         Err(_err) => {
                             return Err("failed to parse volume level".to_string());
@@ -427,7 +457,7 @@ pub fn parse_cmd(args: &Vec<String>,
             }
         }
         _ => {
-            return Err(format!("unknown command '{}'", cmd));
+            return Err(format!("unknown command '{}'", cmd[0]));
         }
     }
 
@@ -437,10 +467,35 @@ pub fn parse_cmd(args: &Vec<String>,
                resp_handler));
 }
 
+const CHNL_API_VERSION: u64         = 0x0001;
+const CHNL_PLAYSTATE: u64           = 0x0002;
+const CHNL_TRACK: u64               = 0x0004;
+const CHNL_LYRICS: u64              = 0x0008;
+const CHNL_TIME: u64                = 0x0010;
+const CHNL_RATING: u64              = 0x0020;
+const CHNL_SHUFFLE: u64             = 0x0040;
+const CHNL_REPEAT: u64              = 0x0080;
+const CHNL_PLAYLISTS: u64           = 0x0100;
+const CHNL_QUEUE: u64               = 0x0200;
+const CHNL_SEARCH_RESULTS: u64      = 0x0400;
+const CHNL_LIBRARY: u64             = 0x0800;
+const CHNL_VOLUME: u64              = 0x1000;
+const CHNL_SETTINGS_THEMECOLOR: u64 = 0x2000;
+const CHNL_SETTINGS_THEME: u64      = 0x4000;
+const CHNL_SETTINGS_THEMETYPE: u64  = 0x8000;
+const CHNL_ALL: u64                 = 0x17FE; //0xFFFF;
+
+const TIMEOUT_EVENT: ws::util::Token = ws::util::Token(1);
+const TIMEOUT_MSECS: u64             = 4000; // 4secs
+
+static REQUEST_ID: u32 = 13;
+
 struct Client
 {
     out: ws::Sender,
-    args: Vec<String>,
+    cmd: Vec<String>,
+    token: String,
+    rcvd_new_auth_token: bool,
     resp_handler: fn(serde_json::Value),
     is_status_cmd: bool,
     is_lyrics_cmd: bool,
@@ -461,24 +516,29 @@ struct Client
     cur_queue: String,
     cur_playlists: String,
     cur_search: String,
+    channels_rcvd: u64,
     got_all_channels: bool,
     cmd_sent: bool,
 }
 
 impl Client
 {
-    pub fn new(out: ws::Sender, args: &Vec<String>) -> Client
+    pub fn new(out: ws::Sender,
+               cmd: &Vec<String>,
+               token: &str) -> Client
     {
         Client {
             out: out,
-            args: args.clone(),
+            cmd: cmd.clone(),
+            token: token.to_string(),
+            rcvd_new_auth_token: false,
             resp_handler: generic_handler,
-            is_status_cmd: args[1].as_str() == "status",
-            is_lyrics_cmd: args[1].as_str() == "lyrics",
-            is_queue_cmd: args[1].as_str() == "queue",
-            is_playlists_cmd: args[1].as_str() == "playlists",
+            is_status_cmd: cmd[0].as_str() == "status",
+            is_lyrics_cmd: cmd[0].as_str() == "lyrics",
+            is_queue_cmd: cmd[0].as_str() == "queue",
+            is_playlists_cmd: cmd[0].as_str() == "playlists",
             is_result_no_txt_cmd:
-                (args[1].as_str() == "results") && (args.len() == 2),
+                (cmd[0].as_str() == "results") && (cmd.len() == 1),
             cur_volume: 0,
             cur_shuffle: "".to_string(),
             cur_repeat: "".to_string(),
@@ -493,6 +553,7 @@ impl Client
             cur_queue: "".to_string(),
             cur_playlists: "".to_string(),
             cur_search: "".to_string(),
+            channels_rcvd: 0,
             got_all_channels: false,
             cmd_sent: false,
         }
@@ -526,16 +587,23 @@ impl ws::Handler for Client
 {
     fn on_open(&mut self, _: ws::Handshake) -> ws::Result<()>
     {
+        if self.cmd[0] == "auth" {
+            self.cmd_sent = true;
+            return self.send_cmd("connect", "connect",
+                                 &format!(r#"["{}"]"#, APP_NAME));
+        }
+
         let mut auth = String::new();
         auth.push_str(&format!(r#"{{ "{}":"{}", "{}":"{}", "{}":["{}","{}"] }}"#,
                                "namespace", "connect",
                                "method", "connect",
-                               "arguments", APP_NAME, TOKEN));
-        //println!("{}", auth);
+                               "arguments", APP_NAME, self.token));
 
         if let Err(_) = self.out.send(auth) {
             return Err(ws::Error::from(Error::new(ErrorKind::Other, "failed to send auth message")));
         }
+
+        self.out.timeout(TIMEOUT_MSECS, TIMEOUT_EVENT)?;
 
         return Ok(());
     }
@@ -545,12 +613,14 @@ impl ws::Handler for Client
         println!("ERROR: {}", err);
     }
 
-    /*
     fn on_timeout(&mut self, event: ws::util::Token) -> ws::Result<()>
     {
-        /* XXX */
+        if event == TIMEOUT_EVENT {
+            return Err(ws::Error::from(Error::new(ErrorKind::Other, "command timeout")));
+        }
+
+        return Ok(());
     }
-    */
 
     fn on_message(&mut self, msg: ws::Message) -> ws::Result<()>
     {
@@ -560,10 +630,21 @@ impl ws::Handler for Client
         if js.get("channel") != None {
             let payload = js.get("payload").unwrap();
             match js.get("channel").unwrap().as_str().unwrap() {
-                "volume" => {
-                    self.cur_volume = payload.as_u64().unwrap();
+                "connect" => {
+                    if self.cmd[0] == "auth2" &&
+                       payload.as_str().unwrap() != "CODE_REQUIRED" {
+                        self.token = payload.as_str().unwrap().to_string();
+                        self.rcvd_new_auth_token = true;
+                    }
+                }
+                "API_VERSION" => {
+                    self.channels_rcvd |= CHNL_API_VERSION;
+                }
+                "playState" => {
+                    self.channels_rcvd |= CHNL_PLAYSTATE;
                 }
                 "track" => {
+                    self.channels_rcvd |= CHNL_TRACK;
                     if !payload.get("artist").unwrap().is_null() {
                         self.cur_track_artist =
                             payload.get("artist").unwrap().as_str().unwrap().to_string();
@@ -578,56 +659,68 @@ impl ws::Handler for Client
                     }
                 }
                 "lyrics" => {
+                    self.channels_rcvd |= CHNL_LYRICS;
                     if !payload.is_null() {
                         self.cur_track_lyrics = payload.as_str().unwrap().to_string();
                     }
                 }
                 "time" => {
+                    self.channels_rcvd |= CHNL_TIME;
                     self.cur_track_progress =
                         payload.get("current").unwrap().as_u64().unwrap();
                     self.cur_track_total =
                         payload.get("total").unwrap().as_u64().unwrap();
                 }
                 "rating" => {
+                    self.channels_rcvd |= CHNL_RATING;
                     self.cur_track_liked =
                         payload.get("liked").unwrap().as_bool().unwrap();
                     self.cur_track_disliked =
                         payload.get("disliked").unwrap().as_bool().unwrap();
                 }
                 "shuffle" => {
+                    self.channels_rcvd |= CHNL_SHUFFLE;
                     self.cur_shuffle = payload.as_str().unwrap().to_string();
                 }
                 "repeat" => {
+                    self.channels_rcvd |= CHNL_REPEAT;
                     self.cur_repeat = payload.as_str().unwrap().to_string();
                 }
                 "playlists" => {
+                    self.channels_rcvd |= CHNL_PLAYLISTS;
                     self.cur_playlists = payload.to_string();
                 }
                 "queue" => {
+                    self.channels_rcvd |= CHNL_QUEUE;
                     self.cur_queue = payload.to_string();
                 }
                 "search-results" => {
+                    self.channels_rcvd |= CHNL_SEARCH_RESULTS;
                     self.cur_search = payload.to_string();
                 }
                 "library" => {
-                    /* XXX HACK!
-                     * The last channel record seems to always be
-                     * the "library". Once we recieve this then we can parse
-                     * and send the user command. Probably better to track
-                     * which channels we've received and after all have been
-                     * seen then send the command. This would remove any
-                     * notion of order.
-                     */
-                    self.got_all_channels = true;
+                    self.channels_rcvd |= CHNL_LIBRARY;
                 }
-                "API_VERSION" |
-                "playState" |
-                "settings:themeColor" |
-                "settings:theme" |
-                "settings:themeType" |
+                "volume" => {
+                    self.channels_rcvd |= CHNL_VOLUME;
+                    self.cur_volume = payload.as_u64().unwrap();
+                }
+                "settings:themeColor" => {
+                    self.channels_rcvd |= CHNL_SETTINGS_THEMECOLOR;
+                }
+                "settings:theme" => {
+                    self.channels_rcvd |= CHNL_SETTINGS_THEME;
+                }
+                "settings:themeType" => {
+                    self.channels_rcvd |= CHNL_SETTINGS_THEMETYPE;
+                }
                 _ => {
                     //println!("{:#?}", js);
                 }
+            }
+
+            if (self.channels_rcvd & CHNL_ALL) == CHNL_ALL {
+                self.got_all_channels = true;
             }
         }
 
@@ -657,7 +750,7 @@ impl ws::Handler for Client
             } else {
 
                 let (_n, _m, mut _a, _r) =
-                    match parse_cmd(&self.args,
+                    match parse_cmd(&self.cmd,
                                     self.cur_track_progress,
                                     self.cur_track_total) {
                         Err(e) => {
@@ -705,9 +798,20 @@ impl ws::Handler for Client
             }
         }
 
-        if self.cmd_sent &&
-           js.get("requestID") != None &&
-           js.get("requestID").unwrap() == REQUEST_ID {
+        if self.got_all_channels && self.cmd_sent && self.cmd[0] == "auth" {
+            let code = auth_handler();
+            self.cmd[0] = "auth2".to_string();
+            return self.send_cmd("connect", "connect",
+                                 &format!(r#"["{}", "{}"]"#, APP_NAME, code));
+        }
+        else if self.got_all_channels && self.cmd_sent &&
+                self.cmd[0] == "auth2" && self.rcvd_new_auth_token {
+            self.out.close(ws::CloseCode::Normal).unwrap(); // close connection
+            println!("Token: {}", self.token);
+        }
+        else if self.cmd_sent &&
+                js.get("requestID") != None &&
+                js.get("requestID").unwrap() == REQUEST_ID {
             self.out.close(ws::CloseCode::Normal).unwrap(); // close connection
             //println!("Got the response!");
             //println!("{:#?}", js);
@@ -766,10 +870,10 @@ impl ws::Handler for Client
     }
 }
 
-fn usage(args: &Vec<String>)
+fn usage(cmd: &str)
 {
-    println!("Usage: {} <command> [ args ]", args[0]);
-    println!("  help");
+    println!("Usage: {} <command> [ args ]", cmd);
+    println!("  auth");
     println!("  status");
     println!("  play [ <track#> ]");
     println!("  pause");
@@ -795,20 +899,48 @@ fn main()
     let args: Vec<String> = env::args().collect();
     //println!("{:#?}", args);
 
-    if args.len() < 2 {
-        println!("ERROR: invalid command line args!");
-        usage(&args);
-        std::process::exit(1);
-    }
+    let mut opts = Options::new();
+    opts.optflag("h", "help", "print usage");
+    opts.optopt("c", "config", "config file", "CONFIG");
+    let options = match opts.parse(&args[1..]) {
+        Ok(m) => { m }
+        Err(f) => { panic!(f.to_string()) }
+    };
 
-    if args[1] == "help" {
-        usage(&args);
+    if options.opt_present("h") {
+        usage(&args[0]);
         std::process::exit(0);
     }
 
+    let config_file = match options.opt_str("c") {
+        Some(cf) => { cf }
+        None => { format!("{}/gpmdp_rc.yaml", env::var("HOME").unwrap()) }
+    };
+
+    if options.free.is_empty() {
+        println!("ERROR: invalid command line args!");
+        usage(&args[0]);
+        std::process::exit(1);
+    }
+
+    let cmd = options.free;
+
+    let token: String;
+    let url: String;
+
+    match get_config(&config_file) {
+        Some(cfg) => {
+            token = cfg[0]["token"].as_str().unwrap().to_string();
+            url   = cfg[0]["url"].as_str().unwrap().to_string();
+        }
+        None => {
+            std::process::exit(1);
+        }
+    }
+
     // connect to the GPMPD websocket and call the closure
-    match ws::connect(URL, |out| {
-        Client::new(out, &args)
+    match ws::connect(url, |out| {
+        Client::new(out, &cmd, &token)
     }) {
         Ok(_)  => std::process::exit(0),
         Err(_) => std::process::exit(1)
