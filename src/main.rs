@@ -13,10 +13,6 @@ use std::io::{Error, ErrorKind};
 use getopts::Options;
 use yaml_rust::{Yaml, YamlLoader};
 
-/* XXX Todo...
- * - only wait and process channels that we care about based on the command
- */
-
 static APP_NAME: &str = "gpmdp_rc";
 
 fn get_config(file: &str) -> Option<std::vec::Vec<Yaml>>
@@ -266,9 +262,9 @@ fn generic_handler(_js: serde_json::Value)
     //println!("{:#?}", _js);
 }
 
-pub fn parse_cmd(cmd: &Vec<String>,
-                 cur_track_progress: u64,
-                 cur_track_total: u64)
+fn parse_cmd(cmd: &Vec<String>,
+             cur_track_progress: u64,
+             cur_track_total: u64)
     -> Result<(/* namespace */ String,
                /* method */ String,
                /* arguments */ String,
@@ -483,12 +479,39 @@ const CHNL_VOLUME: u64              = 0x1000;
 const CHNL_SETTINGS_THEMECOLOR: u64 = 0x2000;
 const CHNL_SETTINGS_THEME: u64      = 0x4000;
 const CHNL_SETTINGS_THEMETYPE: u64  = 0x8000;
-const CHNL_ALL: u64                 = 0x17FE; //0xFFFF;
+
+const CHNLS_ALL: u64           = 0x17FE; //0xFFFF;
+const CHNLS_FOR_STATUS: u64    = (CHNL_PLAYSTATE |
+                                  CHNL_TRACK |
+                                  CHNL_TIME |
+                                  CHNL_RATING |
+                                  CHNL_SHUFFLE |
+                                  CHNL_REPEAT |
+                                  CHNL_QUEUE |
+                                  CHNL_VOLUME);
+const CHNLS_FOR_AUTH: u64      = 0;
+const CHNLS_FOR_PLAY: u64      = CHNL_QUEUE;
+const CHNLS_FOR_PAUSE: u64     = 0;
+const CHNLS_FOR_NEXT: u64      = 0;
+const CHNLS_FOR_PREV: u64      = 0;
+const CHNLS_FOR_REPLAY: u64    = 0;
+const CHNLS_FOR_SEEK: u64      = CHNL_TIME;
+const CHNLS_FOR_LYRICS: u64    = CHNL_LYRICS;
+const CHNLS_FOR_THUMBS: u64    = 0;
+const CHNLS_FOR_SHUFFLE: u64   = 0;
+const CHNLS_FOR_REPEAT: u64    = 0;
+const CHNLS_FOR_QUEUE: u64     = CHNL_QUEUE;
+const CHNLS_FOR_CLEAR: u64     = 0;
+const CHNLS_FOR_PLAYLISTS: u64 = CHNL_PLAYLISTS;
+const CHNLS_FOR_PLAYLIST: u64  = CHNL_PLAYLISTS;
+const CHNLS_FOR_SEARCH: u64    = 0;
+const CHNLS_FOR_RESULTS: u64   = CHNL_SEARCH_RESULTS;
+const CHNLS_FOR_VOLUME: u64    = 0;
 
 const TIMEOUT_EVENT: ws::util::Token = ws::util::Token(1);
 const TIMEOUT_MSECS: u64             = 4000; // 4secs
 
-static REQUEST_ID: u32 = 13;
+const REQUEST_ID: u32 = 13;
 
 struct Client
 {
@@ -516,7 +539,8 @@ struct Client
     cur_queue: String,
     cur_playlists: String,
     cur_search: String,
-    channels_rcvd: u64,
+    chnls_to_wait_for: u64,
+    chnls_rcvd: u64,
     got_all_channels: bool,
     cmd_sent: bool,
 }
@@ -553,7 +577,8 @@ impl Client
             cur_queue: "".to_string(),
             cur_playlists: "".to_string(),
             cur_search: "".to_string(),
-            channels_rcvd: 0,
+            chnls_to_wait_for: 0,
+            chnls_rcvd: 0,
             got_all_channels: false,
             cmd_sent: false,
         }
@@ -587,6 +612,29 @@ impl ws::Handler for Client
 {
     fn on_open(&mut self, _: ws::Handshake) -> ws::Result<()>
     {
+        self.chnls_to_wait_for = match self.cmd[0].as_str() {
+            "status"    => CHNLS_FOR_STATUS,
+            "auth"      => CHNLS_FOR_AUTH,
+            "play"      => CHNLS_FOR_PLAY,
+            "pause"     => CHNLS_FOR_PAUSE,
+            "next"      => CHNLS_FOR_NEXT,
+            "prev"      => CHNLS_FOR_PREV,
+            "replay"    => CHNLS_FOR_REPLAY,
+            "seek"      => CHNLS_FOR_SEEK,
+            "lyrics"    => CHNLS_FOR_LYRICS,
+            "thumbs"    => CHNLS_FOR_THUMBS,
+            "shuffle"   => CHNLS_FOR_SHUFFLE,
+            "repeat"    => CHNLS_FOR_REPEAT,
+            "queue"     => CHNLS_FOR_QUEUE,
+            "clear"     => CHNLS_FOR_CLEAR,
+            "playlists" => CHNLS_FOR_PLAYLISTS,
+            "playlist"  => CHNLS_FOR_PLAYLIST,
+            "search"    => CHNLS_FOR_SEARCH,
+            "results"   => CHNLS_FOR_RESULTS,
+            "volume"    => CHNLS_FOR_VOLUME,
+            _           => CHNLS_ALL
+        };
+
         if self.cmd[0] == "auth" {
             self.cmd_sent = true;
             return self.send_cmd("connect", "connect",
@@ -638,13 +686,13 @@ impl ws::Handler for Client
                     }
                 }
                 "API_VERSION" => {
-                    self.channels_rcvd |= CHNL_API_VERSION;
+                    self.chnls_rcvd |= CHNL_API_VERSION;
                 }
                 "playState" => {
-                    self.channels_rcvd |= CHNL_PLAYSTATE;
+                    self.chnls_rcvd |= CHNL_PLAYSTATE;
                 }
                 "track" => {
-                    self.channels_rcvd |= CHNL_TRACK;
+                    self.chnls_rcvd |= CHNL_TRACK;
                     if !payload.get("artist").unwrap().is_null() {
                         self.cur_track_artist =
                             payload.get("artist").unwrap().as_str().unwrap().to_string();
@@ -659,67 +707,67 @@ impl ws::Handler for Client
                     }
                 }
                 "lyrics" => {
-                    self.channels_rcvd |= CHNL_LYRICS;
+                    self.chnls_rcvd |= CHNL_LYRICS;
                     if !payload.is_null() {
                         self.cur_track_lyrics = payload.as_str().unwrap().to_string();
                     }
                 }
                 "time" => {
-                    self.channels_rcvd |= CHNL_TIME;
+                    self.chnls_rcvd |= CHNL_TIME;
                     self.cur_track_progress =
                         payload.get("current").unwrap().as_u64().unwrap();
                     self.cur_track_total =
                         payload.get("total").unwrap().as_u64().unwrap();
                 }
                 "rating" => {
-                    self.channels_rcvd |= CHNL_RATING;
+                    self.chnls_rcvd |= CHNL_RATING;
                     self.cur_track_liked =
                         payload.get("liked").unwrap().as_bool().unwrap();
                     self.cur_track_disliked =
                         payload.get("disliked").unwrap().as_bool().unwrap();
                 }
                 "shuffle" => {
-                    self.channels_rcvd |= CHNL_SHUFFLE;
+                    self.chnls_rcvd |= CHNL_SHUFFLE;
                     self.cur_shuffle = payload.as_str().unwrap().to_string();
                 }
                 "repeat" => {
-                    self.channels_rcvd |= CHNL_REPEAT;
+                    self.chnls_rcvd |= CHNL_REPEAT;
                     self.cur_repeat = payload.as_str().unwrap().to_string();
                 }
                 "playlists" => {
-                    self.channels_rcvd |= CHNL_PLAYLISTS;
+                    self.chnls_rcvd |= CHNL_PLAYLISTS;
                     self.cur_playlists = payload.to_string();
                 }
                 "queue" => {
-                    self.channels_rcvd |= CHNL_QUEUE;
+                    self.chnls_rcvd |= CHNL_QUEUE;
                     self.cur_queue = payload.to_string();
                 }
                 "search-results" => {
-                    self.channels_rcvd |= CHNL_SEARCH_RESULTS;
+                    self.chnls_rcvd |= CHNL_SEARCH_RESULTS;
                     self.cur_search = payload.to_string();
                 }
                 "library" => {
-                    self.channels_rcvd |= CHNL_LIBRARY;
+                    self.chnls_rcvd |= CHNL_LIBRARY;
                 }
                 "volume" => {
-                    self.channels_rcvd |= CHNL_VOLUME;
+                    self.chnls_rcvd |= CHNL_VOLUME;
                     self.cur_volume = payload.as_u64().unwrap();
                 }
                 "settings:themeColor" => {
-                    self.channels_rcvd |= CHNL_SETTINGS_THEMECOLOR;
+                    self.chnls_rcvd |= CHNL_SETTINGS_THEMECOLOR;
                 }
                 "settings:theme" => {
-                    self.channels_rcvd |= CHNL_SETTINGS_THEME;
+                    self.chnls_rcvd |= CHNL_SETTINGS_THEME;
                 }
                 "settings:themeType" => {
-                    self.channels_rcvd |= CHNL_SETTINGS_THEMETYPE;
+                    self.chnls_rcvd |= CHNL_SETTINGS_THEMETYPE;
                 }
                 _ => {
                     //println!("{:#?}", js);
                 }
             }
 
-            if (self.channels_rcvd & CHNL_ALL) == CHNL_ALL {
+            if (self.chnls_rcvd & self.chnls_to_wait_for) == self.chnls_to_wait_for {
                 self.got_all_channels = true;
             }
         }
