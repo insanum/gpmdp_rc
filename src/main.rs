@@ -920,7 +920,7 @@ impl ws::Handler for Client
 
 fn usage(cmd: &str)
 {
-    println!("Usage: {} <command> [ args ]", cmd);
+    println!("Usage: {} -c <config_file> <command> [ args ]", cmd);
     println!("  auth");
     println!("  status");
     println!("  play [ <track#> ]");
